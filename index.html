@@ -386,19 +386,21 @@
     <div class="sub">拍照和菜单识别需要 Gemini API key。key 只存在这台手机的浏览器里，不上传、不写进代码，别人看不到。</div>
     <div class="field"><label>Gemini API Key</label>
       <input type="password" id="keyInput" placeholder="AIza..." autocomplete="off"></div>
-    <div class="field"><label>模型（默认即可，识别不准可换）</label>
+    <div class="field"><label>模型</label>
       <select id="modelInput">
-        <option value="gemini-2.0-flash">gemini-2.0-flash（推荐·快）</option>
+        <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+        <option value="gemini-2.5-flash">gemini-2.5-flash</option>
         <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp</option>
         <option value="gemini-1.5-flash">gemini-1.5-flash</option>
-        <option value="gemini-1.5-pro">gemini-1.5-pro（更准·略慢）</option>
       </select></div>
+    <button class="btn-ghost" style="width:100%;margin-bottom:8px" onclick="detectModels()" id="detectBtn">🔍 检测我的 key 现在能用哪些模型</button>
+    <div id="detectStatus" style="font-size:11px;line-height:1.6;margin-bottom:8px"></div>
     <div id="keyStatus"></div>
     <div class="btn-row">
       <button class="btn-ghost" onclick="closeSettings()">取消</button>
       <button class="btn-primary" onclick="saveSettings()">保存</button>
     </div>
-    <div class="sub" style="margin:14px 0 0">若识别报错，多半是：网络需开代理、key 失效、或该模型名已更新。换个模型或重新申请 key 即可。</div>
+    <div class="sub" style="margin:14px 0 0">遇到「识别失败(404) 模型未找到」，说明该模型名已被 Google 下线。先填好上面的 key，点「🔍 检测」，软件会自动列出你现在真正能用的模型，选一个保存即可。</div>
   </div>
 </div>
 
@@ -570,11 +572,24 @@ function delItem(idx){const log=getDayLog(currentDate);log.splice(idx,1);setDayL
 function openSettings(){
   const c=loadCfg();
   document.getElementById('keyInput').value=c.key||'';
-  document.getElementById('modelInput').value=c.model||'gemini-2.0-flash';
+  setModelDropdown(c.model||'gemini-2.0-flash');
+  document.getElementById('detectStatus').textContent='';
   updateKeyStatus();
   document.getElementById('settingsMask').classList.add('open');
 }
 function closeSettings(){document.getElementById('settingsMask').classList.remove('open');}
+/* ensure the saved model appears & is selected even if not in default list */
+function setModelDropdown(selected,list){
+  const sel=document.getElementById('modelInput');
+  if(list&&list.length){
+    sel.innerHTML=list.map(m=>`<option value="${m}">${m}</option>`).join('');
+  }
+  // if selected not present, add it
+  if(selected&&![...sel.options].some(o=>o.value===selected)){
+    const o=document.createElement('option');o.value=selected;o.textContent=selected;sel.insertBefore(o,sel.firstChild);
+  }
+  if(selected)sel.value=selected;
+}
 function updateKeyStatus(){
   const c=loadCfg();const el=document.getElementById('keyStatus');
   if(c.key){el.className='key-status key-ok';el.textContent='✓ 已配置 key，可以使用拍照和菜单识别';}
@@ -586,6 +601,54 @@ function saveSettings(){
   saveCfg({key:key,model:model});
   updateKeyStatus();toast('设置已保存');
   setTimeout(closeSettings,600);
+}
+/* Ask Google which models this key can actually use (fixes 404 model-not-found) */
+async function detectModels(){
+  const key=document.getElementById('keyInput').value.trim();
+  const st=document.getElementById('detectStatus');
+  const btn=document.getElementById('detectBtn');
+  if(!key){st.style.color='var(--coral)';st.textContent='请先在上面填入 key，再点检测。';return;}
+  btn.textContent='检测中…';btn.disabled=true;st.style.color='var(--ink-dim)';st.textContent='正在向 Google 查询可用模型…';
+  try{
+    const resp=await fetch('https://generativelanguage.googleapis.com/v1beta/models?key='+encodeURIComponent(key));
+    if(!resp.ok){
+      const t=await resp.text();
+      st.style.color='var(--coral)';
+      st.textContent=(resp.status===400||resp.status===403)?'key 无效或无权限，请检查 key 是否复制完整。':('查询失败（'+resp.status+'），可能需要开代理后重试。');
+      btn.textContent='🔍 检测我的 key 现在能用哪些模型';btn.disabled=false;return;
+    }
+    const data=await resp.json();
+    // keep only models that support generateContent AND look like vision-capable gemini models
+    const usable=(data.models||[])
+      .filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+      .map(m=>m.name.replace('models/',''))
+      .filter(n=>n.startsWith('gemini'))
+      .filter(n=>!n.includes('embedding')&&!n.includes('aqa'));
+    // prefer flash models (faster/cheaper), and newer version numbers first
+    const verNum=n=>{const m=n.match(/gemini-(\d+\.?\d*)/);return m?parseFloat(m[1]):0;};
+    usable.sort((a,b)=>{
+      const af=a.includes('flash')?0:1, bf=b.includes('flash')?0:1;
+      if(af!==bf)return af-bf;              // flash first
+      const av=verNum(a),bv=verNum(b);
+      if(av!==bv)return bv-av;              // newer version first
+      // plain "gemini-2.5-flash" before variants like "-exp","-lite","-8b"
+      const aPlain=/flash$|pro$/.test(a)?0:1, bPlain=/flash$|pro$/.test(b)?0:1;
+      if(aPlain!==bPlain)return aPlain-bPlain;
+      return a.localeCompare(b);
+    });
+    if(usable.length===0){
+      st.style.color='var(--coral)';st.textContent='没查到可用的视觉模型，请稍后重试或重新申请 key。';
+    }else{
+      const saved=loadCfg().model;
+      const pick=usable.includes(saved)?saved:usable[0];
+      setModelDropdown(pick,usable);
+      st.style.color='var(--jade)';
+      st.innerHTML='✓ 查到 '+usable.length+' 个可用模型，已选中「'+pick+'」。点下方「保存」即可生效。';
+    }
+  }catch(e){
+    st.style.color='var(--coral)';st.textContent='网络请求失败，请确认已开代理（Clash）后重试。';
+  }
+  btn.textContent='🔍 检测我的 key 现在能用哪些模型';btn.disabled=false;
 }
 
 /* ============================================================ AI: MENU + PHOTO ============================================================ */
