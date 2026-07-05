@@ -183,6 +183,14 @@
   .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
   .toast.err{background:var(--coral);color:#2a0f0a;}
 
+  /* backup reminder banner */
+  #backupBanner{position:fixed;left:12px;right:12px;bottom:calc(env(safe-area-inset-bottom) + 96px);
+    background:var(--surface-2);border:1px solid var(--jade-deep);border-radius:14px;
+    padding:12px 14px;display:flex;align-items:center;gap:10px;z-index:45;box-shadow:var(--shadow);}
+  #backupBanner span{flex:1;font-size:12px;color:var(--ink);}
+  #backupBanner button{background:var(--jade);color:#08201a;border:none;border-radius:18px;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
+  #backupBanner button.x{background:transparent;color:var(--ink-faint);padding:7px 6px;}
+
   /* settings modal */
   .modal-mask{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:100;display:none;align-items:center;justify-content:center;padding:24px;}
   .modal-mask.open{display:flex;}
@@ -402,7 +410,8 @@
 <!-- PORTION SHEET -->
 <div class="portion-sheet" id="portionSheet">
   <div class="portion-food"><div class="portion-emoji" id="pEmoji">🍚</div>
-    <div><div class="portion-name" id="pName"></div><div class="portion-base" id="pBase"></div></div></div>
+    <div style="flex:1"><div class="portion-name" id="pName"></div><div class="portion-base" id="pBase"></div></div>
+    <div id="pEditLink" style="font-size:12px;color:var(--jade);cursor:pointer" onclick="toggleFoodEdit()">✎ 改数值</div></div>
   <div id="portionPresetWrap">
     <div class="qty-presets" id="qtyPresets"></div>
     <div class="qty-row"><button class="qty-btn" onclick="stepQty(-1)">−</button>
@@ -415,7 +424,25 @@
       <div class="pp-cell"><b id="ppFat" style="color:var(--fat)">0</b><span>脂肪g</span></div>
     </div>
   </div>
-  <button class="confirm-btn" onclick="confirmAdd()">加入记录</button>
+  <!-- edit panel: correct base unit label + per-unit values -->
+  <div id="foodEditPanel" style="display:none">
+    <div class="ai-note" style="margin:0 0 12px">改成你实际的量。比如包装写 150g，就把下面数值改成 150g 对应的。改完存下，以后就按新值算。</div>
+    <div class="field"><label>单位说明（如 1盒(150g)）</label><input type="text" id="edBase"></div>
+    <div class="edit-macros">
+      <div class="field"><label>大卡</label><input type="number" inputmode="decimal" id="edCal"></div>
+      <div class="field"><label>碳水g</label><input type="number" inputmode="decimal" id="edCarb"></div>
+      <div class="field"><label>蛋白g</label><input type="number" inputmode="decimal" id="edProt"></div>
+      <div class="field"><label>脂肪g</label><input type="number" inputmode="decimal" id="edFat"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn-ghost" onclick="toggleFoodEdit()">取消</button>
+      <button class="btn-primary" onclick="saveFoodEdit()">存下并重算</button>
+    </div>
+    <div id="edResetWrap" style="text-align:center;margin-top:10px;display:none">
+      <span style="font-size:11px;color:var(--ink-faint);cursor:pointer" onclick="resetFoodEdit()">↺ 恢复默认值</span>
+    </div>
+  </div>
+  <button class="confirm-btn" id="portionConfirmBtn" onclick="confirmAdd()">加入记录</button>
 </div>
 
 <!-- AI RESULT SHEET (menu + photo) -->
@@ -447,8 +474,19 @@
       <button class="btn-primary" onclick="saveSettings()">保存</button>
     </div>
     <div class="sub" style="margin:14px 0 0">遇到「识别失败(404) 模型未找到」，说明该模型名已被 Google 下线。先填好上面的 key，点「🔍 检测」，软件会自动列出你现在真正能用的模型，选一个保存即可。</div>
+
+    <div style="border-top:1px solid var(--line);margin:18px 0 0;padding-top:16px">
+      <h3 style="font-size:15px">💾 数据备份（重要）</h3>
+      <div class="sub">数据只存在这台手机里。<b style="color:var(--coral)">删除桌面图标、或清理浏览器，数据会丢失。</b>请定期导出备份，换设备或重装后导入即可恢复。</div>
+      <div class="btn-row">
+        <button class="btn-ghost" onclick="exportData()">⬇️ 导出备份</button>
+        <button class="btn-ghost" onclick="document.getElementById('importFile').click()">⬆️ 导入恢复</button>
+      </div>
+      <div id="backupStatus" style="font-size:11px;color:var(--ink-faint);margin-top:8px"></div>
+    </div>
   </div>
 </div>
+<input type="file" id="importFile" accept="application/json,.json" onchange="importData(this)">
 
 <div class="toast" id="toast"></div>
 
@@ -541,6 +579,17 @@ const CUSTOM_KEY='diet_v1_custom';
 function loadCustom(){try{return JSON.parse(localStorage.getItem(CUSTOM_KEY))||[];}catch(e){return[];}}
 function saveCustom(a){localStorage.setItem(CUSTOM_KEY,JSON.stringify(a));}
 
+/* overrides: user-edited values for built-in foods/ingredients. id -> {cal,carb,protein,fat,base} */
+const OVERRIDE_KEY='diet_v1_overrides';
+function loadOverrides(){try{return JSON.parse(localStorage.getItem(OVERRIDE_KEY))||{};}catch(e){return{};}}
+function saveOverrides(o){localStorage.setItem(OVERRIDE_KEY,JSON.stringify(o));}
+/* apply override on top of a food object */
+function withOverride(f){
+  const ov=loadOverrides()[f.id];
+  if(!ov)return f;
+  return {...f,...ov};
+}
+
 let currentDate=todayStr(), activeCat='已购', pendingFood=null, pendingQty=1, aiMode=null;
 
 function todayStr(){return fmtKey(new Date());}
@@ -628,13 +677,13 @@ function saveBmr(){const w=parseFloat(document.getElementById('weightInput').val
 function openPicker(){document.getElementById('pickerMask').classList.add('open');document.getElementById('pickerSheet').classList.add('open');document.getElementById('searchInput').value='';renderCatTabs();renderFoodList();}
 function closePicker(){document.getElementById('pickerMask').classList.remove('open');document.getElementById('pickerSheet').classList.remove('open');}
 function stapleFoods(){
-  // built-in FOODS + custom foods marked for staple clipboard
+  // built-in FOODS (with user overrides) + custom foods marked for staple clipboard
   const custom=loadCustom().filter(f=>f.dest==='staple');
-  return FOODS.concat(custom);
+  return FOODS.map(withOverride).concat(custom.map(withOverride));
 }
 function stapleCats(){
-  const hasCustom=loadCustom().some(f=>f.dest==='staple');
-  return hasCustom?CATS.concat(['我加的']):CATS;
+  const customCats=[...new Set(loadCustom().filter(f=>f.dest==='staple').map(f=>f.cat).filter(c=>c&&!CATS.includes(c)))];
+  return CATS.concat(customCats);
 }
 function renderCatTabs(){document.getElementById('catTabs').innerHTML=stapleCats().map(c=>`<div class="cat-tab ${c===activeCat?'active':''}" onclick="setCat('${c}')">${c}</div>`).join('');}
 function setCat(c){activeCat=c;document.getElementById('searchInput').value='';renderCatTabs();renderFoodList();}
@@ -654,6 +703,9 @@ function openPortion(id){
   pendingFood=stapleFoods().find(f=>f.id===id);pendingQty=1;
   if(!pendingFood)return;
   document.getElementById('portionPresetWrap').style.display='block';
+  document.getElementById('foodEditPanel').style.display='none';
+  document.getElementById('portionConfirmBtn').style.display='block';
+  document.getElementById('pEditLink').style.display='block';
   document.getElementById('pEmoji').textContent=pendingFood.emoji;
   document.getElementById('pName').textContent=pendingFood.name;
   document.getElementById('pBase').textContent='每 '+pendingFood.base+' · '+pendingFood.cal+'kcal';
@@ -662,6 +714,76 @@ function openPortion(id){
   document.getElementById('qtyPresets').innerHTML=presets.map(p=>`<div class="preset" data-q="${p.q}" onclick="setPreset(${p.q})">${p.l}</div>`).join('');
   updatePortionPreview();
   document.getElementById('portionSheet').classList.add('open');
+}
+/* toggle the per-food edit panel */
+function toggleFoodEdit(){
+  const panel=document.getElementById('foodEditPanel');
+  const open=panel.style.display==='none';
+  if(open){
+    const f=pendingFood;
+    document.getElementById('edBase').value=f.base||'';
+    document.getElementById('edCal').value=f.cal;
+    document.getElementById('edCarb').value=f.carb;
+    document.getElementById('edProt').value=f.protein;
+    document.getElementById('edFat').value=f.fat;
+    // show reset only if an override currently exists for this id
+    document.getElementById('edResetWrap').style.display=loadOverrides()[f.id]?'block':'none';
+    panel.style.display='block';
+    document.getElementById('portionPresetWrap').style.display='none';
+    document.getElementById('portionConfirmBtn').style.display='none';
+    document.getElementById('pEditLink').style.display='none';
+  }else{
+    panel.style.display='none';
+    document.getElementById('portionPresetWrap').style.display='block';
+    document.getElementById('portionConfirmBtn').style.display='block';
+    document.getElementById('pEditLink').style.display='block';
+  }
+}
+function saveFoodEdit(){
+  const f=pendingFood;
+  const base=document.getElementById('edBase').value.trim();
+  const cal=parseFloat(document.getElementById('edCal').value)||0;
+  const carb=parseFloat(document.getElementById('edCarb').value)||0;
+  const protein=parseFloat(document.getElementById('edProt').value)||0;
+  const fat=parseFloat(document.getElementById('edFat').value)||0;
+  // is it a built-in (FOODS/INGREDIENTS) or a custom food?
+  const isCustom=loadCustom().some(c=>c.id===f.id);
+  if(isCustom){
+    // edit the custom food record directly
+    const custom=loadCustom();
+    const idx=custom.findIndex(c=>c.id===f.id);
+    if(idx>=0){custom[idx]={...custom[idx],base,cal,carb,protein,fat};saveCustom(custom);}
+  }else{
+    // store an override for the built-in food
+    const ov=loadOverrides();
+    ov[f.id]={base,cal,carb,protein,fat};
+    saveOverrides(ov);
+  }
+  // refresh pendingFood with new values and recompute on the spot
+  pendingFood={...f,base,cal,carb,protein,fat};
+  document.getElementById('pBase').textContent='每 '+base+' · '+cal+'kcal';
+  toggleFoodEdit();
+  updatePortionPreview();
+  // refresh underlying lists
+  if(document.getElementById('pickerSheet').classList.contains('open'))renderFoodList();
+  toast('已更新，按新值计算');
+}
+function resetFoodEdit(){
+  const f=pendingFood;
+  const ov=loadOverrides();delete ov[f.id];saveOverrides(ov);
+  // reload original built-in values
+  const orig=FOODS.concat(INGREDIENTS).find(x=>x.id===f.id);
+  if(orig){pendingFood={...orig};
+    document.getElementById('edBase').value=orig.base;
+    document.getElementById('edCal').value=orig.cal;
+    document.getElementById('edCarb').value=orig.carb;
+    document.getElementById('edProt').value=orig.protein;
+    document.getElementById('edFat').value=orig.fat;
+    document.getElementById('pBase').textContent='每 '+orig.base+' · '+orig.cal+'kcal';
+  }
+  document.getElementById('edResetWrap').style.display='none';
+  updatePortionPreview();
+  toast('已恢复默认值');
 }
 function setPreset(q){pendingQty=q;updatePortionPreview();}
 function stepQty(n){pendingQty=Math.round((pendingQty+n*0.5)*10)/10;if(pendingQty<0.5)pendingQty=0.5;updatePortionPreview();}
@@ -693,6 +815,79 @@ function openSettings(){
   document.getElementById('settingsMask').classList.add('open');
 }
 function closeSettings(){document.getElementById('settingsMask').classList.remove('open');}
+
+/* ============================================================ BACKUP / RESTORE ============================================================ */
+const BACKUP_TS_KEY='diet_v1_lastbackup';
+function collectAllData(){
+  return {
+    _app:'diet-tracker', _ver:1, _exportedAt:new Date().toISOString(),
+    logs:loadLogs(), bmr:loadBmr(), custom:loadCustom(), overrides:loadOverrides()
+    // note: API key intentionally NOT exported for safety
+  };
+}
+function exportData(){
+  try{
+    const data=collectAllData();
+    const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    const d=new Date();
+    a.href=url;a.download='饮食记录备份_'+fmtKey(d)+'.json';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    localStorage.setItem(BACKUP_TS_KEY,new Date().toISOString());
+    const bs=document.getElementById('backupStatus');
+    if(bs)bs.textContent='✓ 已导出。请把这个文件存到「文件」App 或发给自己保存。';
+    toast('备份已导出');
+    hideBackupBanner();
+  }catch(e){toast('导出失败，请重试',true);}
+}
+function importData(input){
+  const file=input.files&&input.files[0];
+  input.value='';
+  if(!file)return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    try{
+      const data=JSON.parse(reader.result);
+      if(!data||data._app!=='diet-tracker'){toast('文件格式不对',true);return;}
+      if(!confirm('导入会用备份文件覆盖当前所有数据（记录、体重、自定义食物）。确定继续吗？'))return;
+      if(data.logs)saveLogs(data.logs);
+      if(data.bmr)saveBmrStore(data.bmr);
+      if(data.custom)saveCustom(data.custom);
+      if(data.overrides)localStorage.setItem(OVERRIDE_KEY,JSON.stringify(data.overrides));
+      render();
+      const bs=document.getElementById('backupStatus');
+      if(bs)bs.textContent='✓ 已从备份恢复。';
+      toast('数据已恢复');
+    }catch(e){toast('导入失败：文件损坏或格式不对',true);}
+  };
+  reader.readAsText(file);
+}
+/* daily backup reminder banner */
+function checkBackupReminder(){
+  const last=localStorage.getItem(BACKUP_TS_KEY);
+  const hasData=Object.keys(loadLogs()).length>0;
+  if(!hasData)return; // nothing to back up yet
+  let due=false;
+  if(!last)due=true;
+  else{
+    const days=(Date.now()-new Date(last).getTime())/86400000;
+    if(days>=1)due=true;
+  }
+  if(due)showBackupBanner();
+}
+function showBackupBanner(){
+  if(document.getElementById('backupBanner'))return;
+  const div=document.createElement('div');
+  div.id='backupBanner';
+  div.innerHTML=`<span>💾 建议备份一次数据，防止丢失</span>
+    <button onclick="exportData()">立即备份</button>
+    <button class="x" onclick="hideBackupBanner()">稍后</button>`;
+  document.body.appendChild(div);
+}
+function hideBackupBanner(){const el=document.getElementById('backupBanner');if(el)el.remove();}
+
 /* ensure the saved model appears & is selected even if not in default list */
 function setModelDropdown(selected,list){
   const sel=document.getElementById('modelInput');
@@ -802,14 +997,18 @@ function openIngredients(){
   renderIngTabs();renderIngList();renderBasket();
 }
 function closeIngredients(){document.getElementById('ingMask').classList.remove('open');document.getElementById('ingSheet').classList.remove('open');}
+function ingGroups(){
+  const customGrps=[...new Set(loadCustom().filter(f=>f.dest==='lib').map(f=>f.grp||f.cat).filter(g=>g&&!INGRP.includes(g)))];
+  return INGRP.concat(customGrps);
+}
 function renderIngTabs(){
-  document.getElementById('ingTabs').innerHTML=INGRP.map(g=>`<div class="cat-tab ${g===ingActiveGrp?'active':''}" onclick="setIngGrp('${g}')">${g}</div>`).join('');
+  document.getElementById('ingTabs').innerHTML=ingGroups().map(g=>`<div class="cat-tab ${g===ingActiveGrp?'active':''}" onclick="setIngGrp('${g}')">${g}</div>`).join('');
 }
 function setIngGrp(g){ingActiveGrp=g;document.getElementById('ingSearch').value='';renderIngTabs();renderIngList();}
 function allIngredients(){
-  // built-in + custom foods marked for lib
-  const custom=loadCustom().filter(f=>f.dest==='lib').map(f=>({...f,grp:'我加的'}));
-  return INGREDIENTS.concat(custom);
+  // built-in (with overrides) + custom foods marked for lib (grouped by their category)
+  const custom=loadCustom().filter(f=>f.dest==='lib').map(f=>({...f,grp:f.grp||f.cat||'其他'}));
+  return INGREDIENTS.map(withOverride).concat(custom.map(withOverride));
 }
 function renderIngList(){
   const q=document.getElementById('ingSearch').value.trim().toLowerCase();
@@ -897,10 +1096,11 @@ const PHOTO_PROMPT=`你是营养师，识别照片里这一盘/这一份食物�
 {"name":"食物名称","cal":数字,"carb":数字,"protein":数字,"fat":数字,"note":"一句话说明，比如份量假设或油多油少"}
 数值是照片里这一份的大约总量（大卡/碳水g/蛋白g/脂肪g）。`;
 
-const LABEL_PROMPT=`图片是一张食品包装上的营养成分表。请读出上面的数字。
-优先按"每份"读；如果表上只有"每100g/每100ml"，就按100g读，并在name里注明。
+const LABEL_PROMPT=`图片是一张食品包装上的营养成分表。请读出上面的数字，并判断这个食品属于哪个分类。
+优先按"每份"读；如果表上只有"每100g/每100ml"，就按100g读，并在per里注明。
+分类cat只能从这几个里选一个：已购、食堂、瘦肉、蔬菜、饮品、主食薯类、蛋类、豆制品、水果、其他。（饮料选"饮品"，零食点心选"已购"，拿不准选"其他"）
 只返回JSON，不要任何多余文字、不要markdown代码块，格式：
-{"name":"食品名称(看不出就写'该食品')","per":"每份或每100g","cal":数字,"carb":数字,"protein":数字,"fat":数字}
+{"name":"食品名称(尽量从包装读，看不出写'该食品')","cat":"分类","per":"每份或每100g","cal":数字,"carb":数字,"protein":数字,"fat":数字}
 cal是大卡(若表上是千焦kJ，请除以4.184换算成大卡)。carb=碳水化合物g，protein=蛋白质g，fat=脂肪g。`;
 
 async function runAI(mode,b64,mime){
@@ -997,24 +1197,28 @@ function editAiPhoto(name,cal,carb,protein,fat){
   pendingQty=1;openAiPortion(true);
 }
 
-/* ---- render nutrition-label result + destination chooser ---- */
+/* ---- render nutrition-label result: editable name + category + destination ---- */
 let pendingLabel=null;
+const LABEL_CATS=['已购','食堂','瘦肉','蔬菜','饮品','主食薯类','蛋类','豆制品','水果','其他'];
 function renderLabelResult(data){
   const cal=Math.round(+data.cal||0),carb=Math.round((+data.carb||0)*10)/10,protein=Math.round((+data.protein||0)*10)/10,fat=Math.round((+data.fat||0)*10)/10;
+  let cat=data.cat&&LABEL_CATS.includes(data.cat)?data.cat:'其他';
   pendingLabel={name:data.name||'该食品',per:data.per||'每份',cal,carb,protein,fat};
   document.getElementById('aiBody').innerHTML=`
-    <div class="ai-note">🏷 读到的成分表数值（${pendingLabel.per}）。确认后选择存到哪个库，以后点一下就能记录。</div>
-    <div class="menu-item rec">
-      <div class="mi-name" style="font-size:16px">${pendingLabel.name}</div>
-      <div class="mi-reason" style="margin-top:4px">单位：${pendingLabel.per}</div>
-      <div class="portion-preview" style="margin:12px 0 0">
-        <div class="pp-cell"><b>${cal}</b><span>大卡</span></div>
-        <div class="pp-cell"><b style="color:var(--carb)">${carb}</b><span>碳水g</span></div>
-        <div class="pp-cell"><b style="color:var(--protein)">${protein}</b><span>蛋白g</span></div>
-        <div class="pp-cell"><b style="color:var(--fat)">${fat}</b><span>脂肪g</span></div>
-      </div>
+    <div class="ai-note">🏷 读到的成分表数值（${pendingLabel.per}）。可以改名字、改分类，再选存到哪个库。</div>
+    <div class="portion-preview" style="margin:0 0 14px">
+      <div class="pp-cell"><b>${cal}</b><span>大卡</span></div>
+      <div class="pp-cell"><b style="color:var(--carb)">${carb}</b><span>碳水g</span></div>
+      <div class="pp-cell"><b style="color:var(--protein)">${protein}</b><span>蛋白g</span></div>
+      <div class="pp-cell"><b style="color:var(--fat)">${fat}</b><span>脂肪g</span></div>
     </div>
-    <div style="font-size:13px;font-weight:600;margin:16px 0 10px">存到哪个库？</div>
+    <div class="field"><label>食品名称（可改）</label>
+      <input type="text" id="lbName" value="${(pendingLabel.name||'').replace(/"/g,'&quot;')}"></div>
+    <div class="field"><label>分类（AI 自动归，可改）</label>
+      <select id="lbCat">${LABEL_CATS.map(c=>`<option value="${c}" ${c===cat?'selected':''}>${c}</option>`).join('')}</select></div>
+    <div class="field"><label>单位说明（可改，如 1瓶(250ml)）</label>
+      <input type="text" id="lbBase" value="${(pendingLabel.per||'').replace(/"/g,'&quot;')}"></div>
+    <div style="font-size:13px;font-weight:600;margin:14px 0 10px">存到哪个库？</div>
     <button class="dest-btn" onclick="saveLabel('staple')">
       <div class="dest-ico">⭐</div>
       <div class="dest-txt"><b>常备清单</b><span>常喝常吃的，放进你的日常清单</span></div>
@@ -1023,23 +1227,27 @@ function renderLabelResult(data){
       <div class="dest-ico">🥘</div>
       <div class="dest-txt"><b>所有食材库</b><span>不常吃的，存进大库备用</span></div>
     </button>
-    <div style="font-size:11px;color:var(--ink-faint);text-align:center;padding:4px 0">存好后可在对应库里搜到它</div>`;
+    <div style="font-size:11px;color:var(--ink-faint);text-align:center;padding:4px 0">存好后可在对应库里按名字搜到它</div>`;
 }
 function saveLabel(dest){
   if(!pendingLabel)return;
+  const name=(document.getElementById('lbName').value||'').trim()||pendingLabel.name;
+  const cat=document.getElementById('lbCat').value||'其他';
+  const base=(document.getElementById('lbBase').value||'').trim()||pendingLabel.per;
   const custom=loadCustom();
   const id='c_'+Date.now();
   custom.push({
-    id, name:pendingLabel.name, emoji:'🏷',
-    base:pendingLabel.per, unit:'份',
+    id, name, emoji:'🏷',
+    base, unit:'份',
     cal:pendingLabel.cal, carb:pendingLabel.carb, protein:pendingLabel.protein, fat:pendingLabel.fat,
-    dest, // 'staple' or 'lib'
-    cat:'我加的', // for staple picker
+    dest,           // 'staple' or 'lib'
+    cat,            // used by staple picker as its category tab
+    grp:cat,        // used by ingredient library grouping (if lib)
     presets:[{l:'1份',q:1},{l:'2份',q:2}]
   });
   saveCustom(custom);
   closeAi();
-  toast(dest==='staple'?'已存进常备清单':'已存进食材库');
+  toast(dest==='staple'?('已存进常备清单·'+cat):('已存进食材库·'+cat));
 }
 
 /* AI portion sheet — shows editable macro fields instead of presets */
@@ -1051,6 +1259,9 @@ function openAiPortion(editable){
   document.getElementById('pBase').textContent=f.base;
   // reuse portion sheet but hide preset stepper, show editable fields
   document.getElementById('portionPresetWrap').style.display='block';
+  document.getElementById('foodEditPanel').style.display='none';
+  document.getElementById('portionConfirmBtn').style.display='block';
+  document.getElementById('pEditLink').style.display='none'; // temp AI foods aren't in a library to edit
   document.getElementById('qtyUnit').textContent=f.unit;
   document.getElementById('qtyPresets').innerHTML=`<div class="preset active">份量 ×<span id="aiQtyLabel">1</span></div>`;
   updatePortionPreview();
@@ -1111,6 +1322,7 @@ function toast(msg,err){const t=document.getElementById('toast');t.textContent=m
   clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.className='toast'+(err?' err':''),2200);}
 
 render();
+checkBackupReminder();
 </script>
 </body>
 </html>
