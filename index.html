@@ -513,7 +513,9 @@
   <div class="modal">
     <h3 id="ceTitle">编辑食品</h3>
     <div class="sub" id="ceHint">改名字、分类、单位和数值。改完立即生效。</div>
-    <div class="field"><label>名字</label><input type="text" id="ceName" placeholder="例如 某某酸奶"></div>
+    <div class="field"><label>名字</label><input type="text" id="ceName" placeholder="例如 卤蛋 / 某某酸奶"></div>
+    <button class="btn-ghost" id="ceAiBtn" style="width:100%;margin-bottom:10px;display:none" onclick="ceAiEstimate()">✨ 只填了名字？让 AI 估算营养</button>
+    <div id="ceAiStatus" style="font-size:11px;line-height:1.5;margin-bottom:8px"></div>
     <div class="field" id="ceDestField" style="display:none"><label>存到哪个库</label>
       <select id="ceDest">
         <option value="staple">⭐ 常备清单（常吃的）</option>
@@ -528,12 +530,12 @@
       </select></div>
     <div class="field"><label id="ceBaseLabel">单位说明（如 1盒(150g)）</label><input type="text" id="ceBase" placeholder="如 1盒(150g)"></div>
     <div class="edit-macros">
+      <div class="field"><label>碳水g</label><input type="number" inputmode="decimal" id="ceCarb" oninput="ceAutoCal()"></div>
+      <div class="field"><label>蛋白g</label><input type="number" inputmode="decimal" id="ceProt" oninput="ceAutoCal()"></div>
+      <div class="field"><label>脂肪g</label><input type="number" inputmode="decimal" id="ceFat" oninput="ceAutoCal()"></div>
       <div class="field"><label id="ceCalLab">大卡</label><input type="number" inputmode="decimal" id="ceCal"></div>
-      <div class="field"><label>碳水g</label><input type="number" inputmode="decimal" id="ceCarb"></div>
-      <div class="field"><label>蛋白g</label><input type="number" inputmode="decimal" id="ceProt"></div>
-      <div class="field"><label>脂肪g</label><input type="number" inputmode="decimal" id="ceFat"></div>
     </div>
-    <div class="hint" id="ceCalcHint" style="display:none;margin-bottom:10px">不知道蛋碳脂？把食品和份量发给 Claude，让它按权威数据帮你算好再填。</div>
+    <div class="hint" id="ceCalcHint" style="display:none;margin-bottom:10px">填了碳水/蛋白/脂肪，大卡会自动算(碳水×4+蛋白×4+脂肪×9)。也可手动改。只知道名字就点上面的「✨ AI 估算」。</div>
     <div class="btn-row">
       <button class="btn-ghost" onclick="closeCustomEdit()">取消</button>
       <button class="btn-primary" onclick="saveCustomEdit()">保存</button>
@@ -918,6 +920,8 @@ function openManualAdd(dest){
   document.getElementById('ceFat').value='';
   document.getElementById('ceCalcHint').style.display='block';
   document.getElementById('ceDeleteWrap').style.display='none';
+  document.getElementById('ceAiBtn').style.display='block';
+  document.getElementById('ceAiStatus').textContent='';
   ceModeChange();
   document.getElementById('customEditMask').classList.add('open');
 }
@@ -940,6 +944,8 @@ function openCustomEdit(id){
   document.getElementById('ceFat').value=f.fat;
   document.getElementById('ceCalcHint').style.display='none';
   document.getElementById('ceDeleteWrap').style.display='block';
+  document.getElementById('ceAiBtn').style.display='none';
+  document.getElementById('ceAiStatus').textContent='';
   ceModeChange();
   document.getElementById('customEditMask').classList.add('open');
 }
@@ -961,6 +967,59 @@ function ceModeChange(){
   }
 }
 function closeCustomEdit(){document.getElementById('customEditMask').classList.remove('open');editingCustomId=null;}
+/* auto-calc calories from macros: carb*4 + protein*4 + fat*9 */
+function ceAutoCal(){
+  const carb=parseFloat(document.getElementById('ceCarb').value)||0;
+  const protein=parseFloat(document.getElementById('ceProt').value)||0;
+  const fat=parseFloat(document.getElementById('ceFat').value)||0;
+  if(document.getElementById('ceCarb').value===''&&document.getElementById('ceProt').value===''&&document.getElementById('ceFat').value==='')return;
+  const cal=Math.round(carb*4+protein*4+fat*9);
+  document.getElementById('ceCal').value=cal;
+}
+/* AI estimate: fill name -> Gemini returns carb/protein/fat/cal */
+async function ceAiEstimate(){
+  const name=(document.getElementById('ceName').value||'').trim();
+  const st=document.getElementById('ceAiStatus');
+  const btn=document.getElementById('ceAiBtn');
+  if(!name){st.style.color='var(--coral)';st.textContent='请先填食品名字。';return;}
+  if(!loadCfg().key){st.style.color='var(--coral)';st.textContent='需要先在 ⚙️ 里配置 Gemini key 才能用 AI 估算。';return;}
+  const mode=document.getElementById('ceMode').value;
+  let per='一份';
+  if(mode==='per100ml')per='每100毫升';else if(mode==='per100g')per='每100克';
+  else{const base=(document.getElementById('ceBase').value||'').trim();if(base)per=base;}
+  btn.disabled=true;btn.textContent='AI 估算中…';st.style.color='var(--ink-dim)';st.textContent='正在让 Gemini 估算「'+name+'」('+per+')的营养…';
+  const c=loadCfg();const model=c.model||'gemini-2.5-flash';
+  const prompt=`估算食物「${name}」在「${per}」时的营养成分。只返回JSON，不要多余文字、不要markdown：
+{"cal":大卡数字,"carb":碳水克,"protein":蛋白克,"fat":脂肪克}
+数值按中国常见食物的标准估算。若单位是每100克/每100毫升，就给每100的量。`;
+  const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(c.key)}`;
+  try{
+    const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
+    if(!resp.ok){
+      let msg='估算失败（'+resp.status+'）。';
+      if(resp.status===404||resp.status===400)msg+='去 ⚙️ 点检测重选模型。';
+      else if(resp.status===403||resp.status===401)msg+='key 无效，去 ⚙️ 检查。';
+      else if(resp.status===429)msg+='额度用尽，去 ⚙️ 换带 flash 的模型。';
+      st.style.color='var(--coral)';st.textContent=msg;
+      btn.disabled=false;btn.textContent='✨ 只填了名字？让 AI 估算营养';return;
+    }
+    const data=await resp.json();
+    let text='';try{text=data.candidates[0].content.parts.map(p=>p.text||'').join('');}catch(e){}
+    let parsed;try{parsed=JSON.parse(text.replace(/```json|```/g,'').trim());}catch(e){
+      st.style.color='var(--coral)';st.textContent='AI 没返回规范数据，请重试或手动填。';
+      btn.disabled=false;btn.textContent='✨ 只填了名字？让 AI 估算营养';return;}
+    document.getElementById('ceCarb').value=Math.round((+parsed.carb||0)*10)/10;
+    document.getElementById('ceProt').value=Math.round((+parsed.protein||0)*10)/10;
+    document.getElementById('ceFat').value=Math.round((+parsed.fat||0)*10)/10;
+    // prefer AI's cal, but it should be close to formula anyway
+    document.getElementById('ceCal').value=Math.round(+parsed.cal||0)||Math.round((+parsed.carb||0)*4+(+parsed.protein||0)*4+(+parsed.fat||0)*9);
+    st.style.color='var(--jade)';st.textContent='✓ AI 已估算并填好，数值不准可自己改。';
+  }catch(e){
+    st.style.color='var(--coral)';st.textContent='网络失败，检查是否开了代理，或手动填。';
+  }
+  btn.disabled=false;btn.textContent='✨ 只填了名字？让 AI 估算营养';
+}
 function saveCustomEdit(){
   const mode=document.getElementById('ceMode').value;
   const name=(document.getElementById('ceName').value||'').trim();
@@ -1396,18 +1455,58 @@ function handleImage(input,mode){
   input.value='';
   if(!file)return;
   aiMode=mode;
-  const reader=new FileReader();
-  reader.onload=()=>{
-    const b64=reader.result.split(',')[1];
-    const mime=file.type||'image/jpeg';
+  openAiSheet(mode==='menu'?'菜单识别':(mode==='label'?'成分表识别':'食物识别'));
+  setAiLoading('正在压缩图片…');
+  compressImage(file, (b64,mime)=>{
+    if(!b64){setAiLoading('图片读取失败，请换一张重试。',true);return;}
     runAI(mode,b64,mime);
+  });
+}
+/* compress/resize an image via canvas to keep upload small & fast */
+function compressImage(file, cb){
+  const reader=new FileReader();
+  reader.onerror=()=>cb(null);
+  reader.onload=()=>{
+    const img=new Image();
+    img.onerror=()=>{
+      // fallback: send original if it can't be drawn
+      try{cb(reader.result.split(',')[1], file.type||'image/jpeg');}catch(e){cb(null);}
+    };
+    img.onload=()=>{
+      try{
+        const MAX=1400; // max width/height px — plenty for menu text, keeps size small
+        let w=img.width,h=img.height;
+        if(w>MAX||h>MAX){
+          if(w>=h){h=Math.round(h*MAX/w);w=MAX;}
+          else{w=Math.round(w*MAX/h);h=MAX;}
+        }
+        const canvas=document.createElement('canvas');
+        canvas.width=w;canvas.height=h;
+        const ctx=canvas.getContext('2d');
+        ctx.fillStyle='#fff';ctx.fillRect(0,0,w,h);
+        ctx.drawImage(img,0,0,w,h);
+        const dataUrl=canvas.toDataURL('image/jpeg',0.82); // jpeg 82% — good text legibility, small size
+        cb(dataUrl.split(',')[1],'image/jpeg');
+      }catch(e){
+        try{cb(reader.result.split(',')[1], file.type||'image/jpeg');}catch(_){cb(null);}
+      }
+    };
+    img.src=reader.result;
   };
   reader.readAsDataURL(file);
 }
 
+function setAiLoading(msg,isErr){
+  if(isErr){
+    document.getElementById('aiBody').innerHTML=`<div style="padding:20px"><div class="ai-note" style="color:var(--coral);border-color:rgba(224,96,122,.3)">${msg}</div><button class="confirm-btn" style="margin-top:14px" onclick="closeAi()">知道了</button></div>`;
+  }else{
+    document.getElementById('aiBody').innerHTML=`<div class="ai-loading"><div class="spinner"></div><div style="color:var(--ink-dim);font-size:13px">${msg}</div></div>`;
+  }
+}
+
 function openAiSheet(title){
   document.getElementById('aiTitle').textContent=title;
-  document.getElementById('aiBody').innerHTML='<div class="ai-loading"><div class="spinner"></div><div style="color:var(--ink-dim);font-size:13px">正在识别，请稍候…</div></div>';
+  document.getElementById('aiBody').innerHTML='<div class="ai-loading"><div class="spinner"></div><div style="color:var(--ink-dim);font-size:13px">准备中…</div></div>';
   document.getElementById('aiMask').classList.add('open');
   document.getElementById('aiSheet').classList.add('open');
 }
@@ -1439,14 +1538,20 @@ unit字段：如果是液体/饮料填"ml"，固体填"g"。
 
 async function runAI(mode,b64,mime){
   const title=mode==='menu'?'菜单识别':(mode==='label'?'成分表识别':'食物识别');
-  openAiSheet(title);
+  // sheet already open from handleImage; update loading text
+  setAiLoading(mode==='menu'?'正在识别菜单，菜品多时稍慢…':'正在识别，请稍候…');
   const c=loadCfg();
   const model=c.model||'gemini-2.0-flash';
   const prompt=mode==='menu'?MENU_PROMPT:(mode==='label'?LABEL_PROMPT:PHOTO_PROMPT);
   const url=`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(c.key)}`;
+  // timeout guard: never spin forever
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),45000); // 45s hard cap
   try{
     const resp=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},
+      signal:controller.signal,
       body:JSON.stringify({contents:[{parts:[{text:prompt},{inline_data:{mime_type:mime,data:b64}}]}]})});
+    clearTimeout(timer);
     if(!resp.ok){
       const errText=await resp.text();
       let msg='识别失败（'+resp.status+'）。';
@@ -1461,12 +1566,17 @@ async function runAI(mode,b64,mime){
     let text='';
     try{text=data.candidates[0].content.parts.map(p=>p.text||'').join('');}catch(e){showAiError('返回格式异常，请重试。',JSON.stringify(data).slice(0,300));return;}
     let parsed;
-    try{parsed=JSON.parse(text.replace(/```json|```/g,'').trim());}catch(e){showAiError('AI 没有返回规范数据，请重拍一张更清晰的照片重试。',text.slice(0,300));return;}
+    try{parsed=JSON.parse(text.replace(/```json|```/g,'').trim());}catch(e){showAiError('AI 没有返回规范数据。菜单太密时容易这样，试试只截「今天」或「一个档口」那一小块再传。',text.slice(0,300));return;}
     if(mode==='menu')renderMenuResult(parsed);
     else if(mode==='label')renderLabelResult(parsed);
     else renderPhotoResult(parsed);
   }catch(e){
-    showAiError('网络请求失败。检查是否开了代理（Clash），或稍后重试。',String(e));
+    clearTimeout(timer);
+    if(e.name==='AbortError'){
+      showAiError('识别超时了（超过45秒）。多半是图太大或菜单信息太密。建议：只截「今天」或「一个档口」那一小块再传，会快很多。',String(e));
+    }else{
+      showAiError('网络请求失败。检查是否开了代理（Clash），或稍后重试。',String(e));
+    }
   }
 }
 function showAiError(msg,detail){
