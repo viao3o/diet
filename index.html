@@ -393,7 +393,11 @@
 <div class="sheet-mask" id="pickerMask" onclick="closePicker()"></div>
 <div class="sheet" id="pickerSheet">
   <div class="sheet-grip"></div>
-  <div class="sheet-head"><div class="sheet-title">选择食物</div><button class="sheet-close" onclick="closePicker()">完成</button></div>
+  <div class="sheet-head"><div class="sheet-title">选择食物</div>
+    <div style="display:flex;gap:14px;align-items:center">
+      <button class="sheet-close" style="color:var(--pink);font-weight:600" onclick="openManualAdd('staple')">✏️ 手动加</button>
+      <button class="sheet-close" onclick="closePicker()">完成</button>
+    </div></div>
   <div class="search-box"><input type="text" id="searchInput" placeholder="搜索食物…" oninput="renderFoodList()"></div>
   <div class="cat-tabs" id="catTabs"></div>
   <div class="food-scroll" id="foodScroll"></div>
@@ -403,7 +407,11 @@
 <div class="sheet-mask" id="ingMask" onclick="closeIngredients()"></div>
 <div class="sheet" id="ingSheet">
   <div class="sheet-grip"></div>
-  <div class="sheet-head"><div class="sheet-title">🥘 食材库</div><button class="sheet-close" onclick="closeIngredients()">完成</button></div>
+  <div class="sheet-head"><div class="sheet-title">🥘 食材库</div>
+    <div style="display:flex;gap:14px;align-items:center">
+      <button class="sheet-close" style="color:var(--pink);font-weight:600" onclick="openManualAdd('lib')">✏️ 手动加</button>
+      <button class="sheet-close" onclick="closeIngredients()">完成</button>
+    </div></div>
   <div class="ai-note" style="margin:0 20px 10px">选食材、填几份，按权威成分表算总量（本地计算，不耗流量）。已选的会累加，一次记录多样。</div>
   <div class="search-box"><input type="text" id="ingSearch" placeholder="搜索食材，如 玉米 / 萝卜…" oninput="renderIngList()"></div>
   <div class="cat-tabs" id="ingTabs"></div>
@@ -500,12 +508,17 @@
 </div>
 <input type="file" id="importFile" accept="application/json,.json" onchange="importData(this)">
 
-<!-- CUSTOM FOOD EDIT MODAL -->
+<!-- CUSTOM FOOD EDIT / ADD MODAL -->
 <div class="modal-mask" id="customEditMask">
   <div class="modal">
-    <h3>编辑食品</h3>
-    <div class="sub">改名字、分类、单位和数值。改完立即生效。</div>
-    <div class="field"><label>名字</label><input type="text" id="ceName"></div>
+    <h3 id="ceTitle">编辑食品</h3>
+    <div class="sub" id="ceHint">改名字、分类、单位和数值。改完立即生效。</div>
+    <div class="field"><label>名字</label><input type="text" id="ceName" placeholder="例如 某某酸奶"></div>
+    <div class="field" id="ceDestField" style="display:none"><label>存到哪个库</label>
+      <select id="ceDest">
+        <option value="staple">⭐ 常备清单（常吃的）</option>
+        <option value="lib">🥘 所有食材库（不常吃的）</option>
+      </select></div>
     <div class="field"><label>分类</label><select id="ceCat"></select></div>
     <div class="field"><label>计量方式</label>
       <select id="ceMode" onchange="ceModeChange()">
@@ -513,18 +526,19 @@
         <option value="per100ml">按毫升 ml（每100ml的值）</option>
         <option value="per100g">按克 g（每100g的值）</option>
       </select></div>
-    <div class="field"><label id="ceBaseLabel">单位说明（如 1盒(150g)）</label><input type="text" id="ceBase"></div>
+    <div class="field"><label id="ceBaseLabel">单位说明（如 1盒(150g)）</label><input type="text" id="ceBase" placeholder="如 1盒(150g)"></div>
     <div class="edit-macros">
       <div class="field"><label id="ceCalLab">大卡</label><input type="number" inputmode="decimal" id="ceCal"></div>
       <div class="field"><label>碳水g</label><input type="number" inputmode="decimal" id="ceCarb"></div>
       <div class="field"><label>蛋白g</label><input type="number" inputmode="decimal" id="ceProt"></div>
       <div class="field"><label>脂肪g</label><input type="number" inputmode="decimal" id="ceFat"></div>
     </div>
+    <div class="hint" id="ceCalcHint" style="display:none;margin-bottom:10px">不知道蛋碳脂？把食品和份量发给 Claude，让它按权威数据帮你算好再填。</div>
     <div class="btn-row">
       <button class="btn-ghost" onclick="closeCustomEdit()">取消</button>
       <button class="btn-primary" onclick="saveCustomEdit()">保存</button>
     </div>
-    <div style="text-align:center;margin-top:12px">
+    <div style="text-align:center;margin-top:12px" id="ceDeleteWrap">
       <span style="font-size:12px;color:var(--coral);cursor:pointer" onclick="deleteCustomFood()">🗑 删除这个食品</span>
     </div>
   </div>
@@ -881,17 +895,41 @@ function onAmountInput(){
   updatePortionPreview();
 }
 
-/* ============================================================ CUSTOM FOOD EDITOR (name/cat/unit/values) ============================================================ */
-let editingCustomId=null;
+/* ============================================================ CUSTOM FOOD EDITOR / MANUAL ADD ============================================================ */
+let editingCustomId=null; // null => add mode
+const CE_CATS=['已购','食堂','瘦肉','蔬菜','饮品','主食薯类','蛋类','豆制品','水果','其他'];
+function fillCeCats(sel){
+  document.getElementById('ceCat').innerHTML=CE_CATS.map(c=>`<option value="${c}" ${c===sel?'selected':''}>${c}</option>`).join('');
+}
+/* open in ADD mode. dest: 'staple' or 'lib' (which library invoked it) */
+function openManualAdd(dest){
+  editingCustomId=null;
+  document.getElementById('ceTitle').textContent='手动加食品';
+  document.getElementById('ceHint').textContent='自己填名字和数值，选存进哪个库。不确定蛋碳脂就发给 Claude 帮你算。';
+  document.getElementById('ceName').value='';
+  document.getElementById('ceDestField').style.display='block';
+  document.getElementById('ceDest').value=dest||'staple';
+  fillCeCats('其他');
+  document.getElementById('ceMode').value='portion';
+  document.getElementById('ceBase').value='';
+  document.getElementById('ceCal').value='';
+  document.getElementById('ceCarb').value='';
+  document.getElementById('ceProt').value='';
+  document.getElementById('ceFat').value='';
+  document.getElementById('ceCalcHint').style.display='block';
+  document.getElementById('ceDeleteWrap').style.display='none';
+  ceModeChange();
+  document.getElementById('customEditMask').classList.add('open');
+}
 function openCustomEdit(id){
   const f=loadCustom().find(c=>c.id===id);
   if(!f)return;
   editingCustomId=id;
+  document.getElementById('ceTitle').textContent='编辑食品';
+  document.getElementById('ceHint').textContent='改名字、分类、单位和数值。改完立即生效。';
   document.getElementById('ceName').value=f.name||'';
-  // category dropdown
-  const cats=['已购','食堂','瘦肉','蔬菜','饮品','主食薯类','蛋类','豆制品','水果','其他'];
-  document.getElementById('ceCat').innerHTML=cats.map(c=>`<option value="${c}" ${c===f.cat?'selected':''}>${c}</option>`).join('');
-  // mode
+  document.getElementById('ceDestField').style.display='none';
+  fillCeCats(f.cat);
   let mode='portion';
   if(f.per100)mode=(f.baseUnit==='ml')?'per100ml':'per100g';
   document.getElementById('ceMode').value=mode;
@@ -900,6 +938,8 @@ function openCustomEdit(id){
   document.getElementById('ceCarb').value=f.carb;
   document.getElementById('ceProt').value=f.protein;
   document.getElementById('ceFat').value=f.fat;
+  document.getElementById('ceCalcHint').style.display='none';
+  document.getElementById('ceDeleteWrap').style.display='block';
   ceModeChange();
   document.getElementById('customEditMask').classList.add('open');
 }
@@ -911,6 +951,7 @@ function ceModeChange(){
   if(mode==='portion'){
     baseLab.textContent='单位说明（如 1盒(150g)）';
     baseInput.disabled=false;baseInput.style.opacity='1';
+    if(!baseInput.value)baseInput.placeholder='如 1盒(150g)';
     calLab.textContent='大卡';
   }else{
     const u=mode==='per100ml'?'ml':'g';
@@ -921,12 +962,9 @@ function ceModeChange(){
 }
 function closeCustomEdit(){document.getElementById('customEditMask').classList.remove('open');editingCustomId=null;}
 function saveCustomEdit(){
-  if(!editingCustomId)return;
-  const custom=loadCustom();
-  const idx=custom.findIndex(c=>c.id===editingCustomId);
-  if(idx<0)return;
   const mode=document.getElementById('ceMode').value;
-  const name=(document.getElementById('ceName').value||'').trim()||custom[idx].name;
+  const name=(document.getElementById('ceName').value||'').trim();
+  if(!name){toast('请填名字',true);return;}
   const cat=document.getElementById('ceCat').value;
   const cal=parseFloat(document.getElementById('ceCal').value)||0;
   const carb=parseFloat(document.getElementById('ceCarb').value)||0;
@@ -935,14 +973,29 @@ function saveCustomEdit(){
   let per100=false,baseUnit=null,unit='份',base=(document.getElementById('ceBase').value||'').trim();
   if(mode==='per100ml'){per100=true;baseUnit='ml';unit='ml';base='每100ml';}
   else if(mode==='per100g'){per100=true;baseUnit='g';unit='g';base='每100g';}
-  custom[idx]={...custom[idx],name,cat,grp:cat,cal,carb,protein,fat,per100,baseUnit,unit,base};
-  if(!per100){delete custom[idx].per100;delete custom[idx].baseUnit;}
-  saveCustom(custom);
+  else if(!base){base='1份';}
+  const custom=loadCustom();
+  if(editingCustomId){
+    // EDIT existing
+    const idx=custom.findIndex(c=>c.id===editingCustomId);
+    if(idx<0)return;
+    custom[idx]={...custom[idx],name,cat,grp:cat,cal,carb,protein,fat,per100,baseUnit,unit,base};
+    if(!per100){delete custom[idx].per100;delete custom[idx].baseUnit;}
+    saveCustom(custom);
+    toast('已保存修改');
+  }else{
+    // ADD new
+    const dest=document.getElementById('ceDest').value||'staple';
+    const rec={id:'c_'+Date.now(),name,emoji:'✏️',cat,grp:cat,dest,cal,carb,protein,fat,unit,base,
+      presets:[{l:'1份',q:1},{l:'2份',q:2}]};
+    if(per100){rec.per100=true;rec.baseUnit=baseUnit;}
+    custom.push(rec);
+    saveCustom(custom);
+    toast(dest==='staple'?('已加进常备清单·'+cat):('已加进食材库·'+cat));
+  }
   closeCustomEdit();
-  // refresh whichever list is open
   if(document.getElementById('pickerSheet').classList.contains('open')){renderCatTabs();renderFoodList();}
   if(document.getElementById('ingSheet').classList.contains('open')){renderIngTabs();renderIngList();}
-  toast('已保存修改');
 }
 function deleteCustomFood(){
   if(!editingCustomId)return;
